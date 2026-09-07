@@ -37,7 +37,7 @@ function requiredEnv(name: string): string {
  */
 export async function callMacalyJson(
   _path: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const apiKey = requiredEnv("WILLY_GEMINI_API_KEY")
   const messages = (body.messages ?? []) as ChatMessage[]
@@ -61,7 +61,11 @@ export async function callMacalyJson(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...(systemMessage
-          ? { systemInstruction: { parts: [{ text: contentToText(systemMessage.content) }] } }
+          ? {
+              systemInstruction: {
+                parts: [{ text: contentToText(systemMessage.content) }],
+              },
+            }
           : {}),
         contents: conversationMessages,
         generationConfig: {
@@ -81,12 +85,16 @@ export async function callMacalyJson(
       content?: { parts?: Array<{ text?: string }> }
       finishReason?: string
     }>
-    error?: { message?: string; status?: string }
+    error?: { code?: number; message?: string; status?: string }
   }
 
   if (!response.ok) {
+    const apiCode = data.error?.code ?? response.status
+    const apiStatus = data.error?.status
     const message = data.error?.message || `Gemini API HTTP ${response.status}`
-    throw new Error(`Gemini API hatası: ${message}`)
+    throw new Error(
+      `Gemini API HTTP ${response.status} (${apiCode}${apiStatus ? ` ${apiStatus}` : ""}): ${message}`,
+    )
   }
 
   const text = data.candidates
@@ -115,7 +123,9 @@ function contentToText(content: MessageContent): string {
     .join("\n")
 }
 
-function normalizeContent(content: MessageContent): Array<Record<string, unknown>> {
+function normalizeContent(
+  content: MessageContent,
+): Array<Record<string, unknown>> {
   if (typeof content === "string") return [{ text: content }]
 
   return content.map((block) => {
