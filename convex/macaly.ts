@@ -3,9 +3,8 @@
 // keeps the existing callMacalyJson() interface so recipes.ts and drinks.ts
 // do not need provider-specific changes.
 
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-const ANTHROPIC_VERSION = "2023-06-01"
-const DEFAULT_MODEL = "claude-sonnet-4-6"
+const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+const DEFAULT_MODEL = "gemini-2.5-flash"
 
 type MessageContent =
   | string
@@ -32,64 +31,77 @@ function requiredEnv(name: string): string {
 /**
  * Backwards-compatible adapter for the former Macaly AI call.
  *
- * The existing callers pass:
- *   { preset, temperature, messages }
- * and expect:
- *   { text }
- *
- * We translate that shape to Anthropic's Messages API, including base64 image
- * blocks used by the photo ingredient/recipe actions.
+ * Existing callers pass { preset, temperature, messages } and expect { text }.
+ * We translate that shape to Gemini's generateContent API, including base64
+ * image parts used by the photo ingredient/recipe actions.
  */
 export async function callMacalyJson(
   _path: string,
   body: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  const apiKey = requiredEnv("ANTHROPIC_API_KEY")
+  const apiKey = requiredEnv("WILLY_GEMINI_API_KEY")
   const messages = (body.messages ?? []) as ChatMessage[]
   const systemMessage = messages.find((message) => message.role === "system")
   const conversationMessages = messages
     .filter((message) => message.role !== "system")
     .map((message) => ({
-      role: message.role === "assistant" ? "assistant" : "user",
-      content: normalizeContent(message.content),
+      role: message.role === "assistant" ? "model" : "user",
+      parts: normalizeContent(message.content),
     }))
 
-  const response = await fetch(ANTHROPIC_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": ANTHROPIC_VERSION,
+  if (conversationMessages.length === 0) {
+    throw new Error("Gemini isteği için en az bir kullanıcı mesajı gereklidir.")
+  }
+
+  const model = process.env.WILLY_GEMINI_MODEL || DEFAULT_MODEL
+  const response = await fetch(
+    `${GEMINI_API_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(systemMessage
+          ? { systemInstruction: { parts: [{ text: contentToText(systemMessage.content) }] } }
+          : {}),
+        contents: conversationMessages,
+        generationConfig: {
+          ...(typeof body.temperature === "number"
+            ? { temperature: body.temperature }
+            : {}),
+          responseMimeType: "application/json",
+          maxOutputTokens:
+            typeof body.max_tokens === "number" ? body.max_tokens : 4096,
+        },
+      }),
     },
-    body: JSON.stringify({
-      model: process.env.ANTHROPIC_MODEL || DEFAULT_MODEL,
-      max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : 4096,
-      ...(systemMessage
-        ? { system: contentToText(systemMessage.content) }
-        : {}),
-      temperature:
-        typeof body.temperature === "number" ? body.temperature : undefined,
-      messages: conversationMessages,
-    }),
-  })
+  )
 
   const data = (await response.json()) as {
-    content?: Array<{ type?: string; text?: string }>
-    error?: { message?: string; type?: string }
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string }> }
+      finishReason?: string
+    }>
+    error?: { message?: string; status?: string }
   }
 
   if (!response.ok) {
-    const message = data.error?.message || `Anthropic API HTTP ${response.status}`
-    throw new Error(`Anthropic API hatası: ${message}`)
+    const message = data.error?.message || `Gemini API HTTP ${response.status}`
+    throw new Error(`Gemini API hatası: ${message}`)
   }
 
-  const text = data.content
-    ?.filter((block) => block.type === "text" && block.text)
-    .map((block) => block.text)
+  const text = data.candidates
+    ?.flatMap((candidate) => candidate.content?.parts ?? [])
+    .map((part) => part.text)
+    .filter((value): value is string => Boolean(value))
     .join("\n")
 
   if (!text) {
-    throw new Error("Anthropic API metin içeren bir yanıt döndürmedi.")
+    const reason = data.candidates?.[0]?.finishReason
+    throw new Error(
+      reason
+        ? `Gemini API metin içeren yanıt döndürmedi (${reason}).`
+        : "Gemini API metin içeren bir yanıt döndürmedi.",
+    )
   }
 
   return { text }
@@ -103,12 +115,12 @@ function contentToText(content: MessageContent): string {
     .join("\n")
 }
 
-function normalizeContent(content: MessageContent): unknown {
-  if (typeof content === "string") return content
+function normalizeContent(content: MessageContent): Array<Record<string, unknown>> {
+  if (typeof content === "string") return [{ text: content }]
 
   return content.map((block) => {
     if (block.type === "text") {
-      return { type: "text", text: block.text ?? "" }
+      return { text: block.text ?? "" }
     }
 
     if (block.type === "image") {
@@ -117,10 +129,8 @@ function normalizeContent(content: MessageContent): unknown {
       }
 
       return {
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: block.mediaType,
+        inlineData: {
+          mimeType: block.mediaType,
           data: block.image,
         },
       }
