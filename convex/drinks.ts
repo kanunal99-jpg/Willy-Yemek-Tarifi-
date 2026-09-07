@@ -2,7 +2,6 @@
 
 import { action } from "./_generated/server"
 import { v } from "convex/values"
-import { callMacalyJson } from "./macaly"
 import { internal } from "./_generated/api"
 
 function buildDrinkSystemPrompt(excluded: string[]): string {
@@ -40,6 +39,39 @@ Kurallar:
 - ASLA alkol içeren bir malzeme veya tarif önerme.`
 }
 
+async function callAnthropicJson(
+  systemPrompt: string,
+  userContent: string,
+  temperature: number,
+): Promise<string> {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY!,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 4096,
+      system: systemPrompt,
+      temperature,
+      messages: [{ role: "user", content: userContent }],
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Anthropic API hatası: ${response.status}`)
+  }
+
+  const data = (await response.json()) as {
+    content?: Array<{ type?: string; text?: string }>
+  }
+  const text = data.content?.find((item) => item.type === "text")?.text
+  if (!text) throw new Error("AI'dan yanıt alınamadı.")
+  return text
+}
+
 function extractJson(text: string): unknown {
   let cleaned = text.trim()
   cleaned = cleaned.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "")
@@ -63,17 +95,7 @@ export const generateFromIngredients = action({
     const systemPrompt = buildDrinkSystemPrompt(args.excludedIngredients ?? [])
     const userPrompt = `Elimdeki malzemeler: ${args.ingredients.join(", ")}. Bu malzemeleri kullanarak (gerekirse su, buz, şeker gibi temel ek malzemelerle birlikte) 5 alkolsüz içecek tarifi öner.`
 
-    const result = await callMacalyJson("/api/client-app/llm-usage", {
-      preset: "REASONING",
-      temperature: 0.9,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    })
-
-    const text = (result as { text?: string }).text
-    if (!text) throw new Error("AI'dan yanıt alınamadı.")
+    const text = await callAnthropicJson(systemPrompt, userPrompt, 0.9)
     const recipes = (extractJson(text) as { recipes: any[] }).recipes
 
     await ctx.runMutation(internal.history.record, {
@@ -96,17 +118,7 @@ export const generateRandom = action({
     const randomSeed = Math.floor(Math.random() * 1000000)
     const userPrompt = `Bana sürpriz yap: mümkün olduğunca yaratıcı ve farklı 5 alkolsüz içecek tarifi öner. Rastgelelik anahtarı: ${randomSeed}. Türk mutfağından, dünya mutfağından ve modern kafe kültüründen karışık örnekler seç.`
 
-    const result = await callMacalyJson("/api/client-app/llm-usage", {
-      preset: "REASONING",
-      temperature: 1.0,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    })
-
-    const text = (result as { text?: string }).text
-    if (!text) throw new Error("AI'dan yanıt alınamadı.")
+    const text = await callAnthropicJson(systemPrompt, userPrompt, 1.0)
     const recipes = (extractJson(text) as { recipes: any[] }).recipes
 
     await ctx.runMutation(internal.history.record, {
