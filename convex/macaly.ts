@@ -30,10 +30,7 @@ function requiredEnv(name: string): string {
 
 /**
  * Backwards-compatible adapter for the former Macaly AI call.
- *
  * Existing callers pass { preset, temperature, messages } and expect { text }.
- * We translate that shape to Gemini's generateContent API, including base64
- * image parts used by the photo ingredient/recipe actions.
  */
 export async function callMacalyJson(
   _path: string,
@@ -61,17 +58,11 @@ export async function callMacalyJson(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...(systemMessage
-          ? {
-              systemInstruction: {
-                parts: [{ text: contentToText(systemMessage.content) }],
-              },
-            }
+          ? { systemInstruction: { parts: [{ text: contentToText(systemMessage.content) }] } }
           : {}),
         contents: conversationMessages,
         generationConfig: {
-          ...(typeof body.temperature === "number"
-            ? { temperature: body.temperature }
-            : {}),
+          ...(typeof body.temperature === "number" ? { temperature: body.temperature } : {}),
           responseMimeType: "application/json",
           maxOutputTokens:
             typeof body.max_tokens === "number" ? body.max_tokens : 4096,
