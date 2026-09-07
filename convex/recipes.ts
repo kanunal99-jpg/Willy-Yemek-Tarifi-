@@ -2,7 +2,6 @@
 
 import { action } from "./_generated/server"
 import { v } from "convex/values"
-import { callMacalyJson } from "./macaly"
 import { internal } from "./_generated/api"
 
 const DIET_INSTRUCTIONS: Record<string, string> = {
@@ -54,6 +53,39 @@ Kurallar:
 - Tam olarak 5 tarif üret, ne eksik ne fazla.`
 }
 
+async function callAnthropicJson(
+  systemPrompt: string,
+  userContent: string | Array<Record<string, unknown>>,
+  temperature: number,
+): Promise<string> {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY!,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 4096,
+      system: systemPrompt,
+      temperature,
+      messages: [{ role: "user", content: userContent }],
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Anthropic API hatası: ${response.status}`)
+  }
+
+  const data = (await response.json()) as {
+    content?: Array<{ type?: string; text?: string }>
+  }
+  const text = data.content?.find((item) => item.type === "text")?.text
+  if (!text) throw new Error("AI'dan yanıt alınamadı.")
+  return text
+}
+
 function extractJson(text: string): unknown {
   let cleaned = text.trim()
   cleaned = cleaned.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "")
@@ -72,27 +104,18 @@ export const detectIngredientsFromImage = action({
     mediaType: v.string(),
   },
   handler: async (_ctx, args) => {
-    const result = await callMacalyJson("/api/client-app/llm-usage", {
-      preset: "REASONING",
-      temperature: 0.3,
-      messages: [
+    const text = await callAnthropicJson(
+      'Fotoğraftaki yemek malzemelerini tespit et. Sadece net görünen malzemeleri listele. Sadece geçerli JSON döndür: {"ingredients": ["string", ...]}. Başka açıklama ekleme.',
+      [
+        { type: "text", text: "Bu fotoğraftaki malzemeleri listele." },
         {
-          role: "system",
-          content:
-            'Fotoğraftaki yemek malzemelerini tespit et. Sadece net görünen malzemeleri listele. Sadece geçerli JSON döndür: {"ingredients": ["string", ...]}. Başka açıklama ekleme.',
-        },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "Bu fotoğraftaki malzemeleri listele." },
-            { type: "image", image: args.imageBase64, mediaType: args.mediaType },
-          ],
+          type: "image",
+          source: { type: "base64", media_type: args.mediaType, data: args.imageBase64 },
         },
       ],
-    })
+      0.3,
+    )
 
-    const text = (result as { text?: string }).text
-    if (!text) throw new Error("AI'dan yanıt alınamadı.")
     const parsed = extractJson(text) as { ingredients: string[] }
     return parsed.ingredients ?? []
   },
@@ -111,18 +134,7 @@ export const generateFromText = action({
 
     const systemPrompt = buildSystemPrompt(args.diets, args.excludedIngredients ?? [])
     const userPrompt = `Elimdeki malzemeler: ${args.ingredients.join(", ")}`
-
-    const result = await callMacalyJson("/api/client-app/llm-usage", {
-      preset: "REASONING",
-      temperature: 0.7,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    })
-
-    const text = (result as { text?: string }).text
-    if (!text) throw new Error("AI'dan yanıt alınamadı.")
+    const text = await callAnthropicJson(systemPrompt, userPrompt, 0.7)
 
     const parsed = extractJson(text) as { recipes: unknown }
     const recipes = parsed.recipes as any[]
@@ -155,36 +167,22 @@ export const generateFromImage = action({
     if (args.confirmedIngredients && args.confirmedIngredients.length > 0) {
       ingredientsUsed = args.confirmedIngredients
       const userPrompt = `Elimdeki malzemeler: ${args.confirmedIngredients.join(", ")}`
-      const result = await callMacalyJson("/api/client-app/llm-usage", {
-        preset: "REASONING",
-        temperature: 0.7,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      })
-      const text = (result as { text?: string }).text
-      if (!text) throw new Error("AI'dan yanıt alınamadı.")
+      const text = await callAnthropicJson(systemPrompt, userPrompt, 0.7)
       recipes = (extractJson(text) as { recipes: any[] }).recipes
     } else {
       const userPrompt =
         "Bu fotoğraftaki malzemeleri tespit et ve bu malzemelerle yukarıdaki kurallara uyan 5 tarif öner. Fotoğrafta net görünmeyen ya da emin olamadığın malzemeleri dahil etme."
-      const result = await callMacalyJson("/api/client-app/llm-usage", {
-        preset: "REASONING",
-        temperature: 0.7,
-        messages: [
-          { role: "system", content: systemPrompt },
+      const text = await callAnthropicJson(
+        systemPrompt,
+        [
+          { type: "text", text: userPrompt },
           {
-            role: "user",
-            content: [
-              { type: "text", text: userPrompt },
-              { type: "image", image: args.imageBase64, mediaType: args.mediaType },
-            ],
+            type: "image",
+            source: { type: "base64", media_type: args.mediaType, data: args.imageBase64 },
           },
         ],
-      })
-      const text = (result as { text?: string }).text
-      if (!text) throw new Error("AI'dan yanıt alınamadı.")
+        0.7,
+      )
       recipes = (extractJson(text) as { recipes: any[] }).recipes
       ingredientsUsed = []
     }
