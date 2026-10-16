@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   build-apk:
@@ -22,10 +24,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          # Do not enable npm cache until a committed package-lock.json exists.
 
       - name: Install web dependencies
-        run: npm install
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            echo "::warning::package-lock.json is missing: bootstrapping a temporary npm install. Commit a generated lock file before production release."
+            npm install --no-audit --no-fund
+          fi
+          npm ls --depth=0
 
       - name: Validate Convex URL
         run: |
