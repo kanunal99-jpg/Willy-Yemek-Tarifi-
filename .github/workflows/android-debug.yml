@@ -18,11 +18,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # There is no committed package-lock.json, so setup-node's npm
+      # cache cannot resolve the dependency lockfile. Install below
+      # continues to work without setup-node caching.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - name: Install web dependencies
         run: npm install
